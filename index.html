@@ -258,46 +258,80 @@
       return res.json();
     }
 
-    // Extract the best "neighborhood" level name
-    function extractPrimary(address) {
-      // Priority order for primary display
-      const priorities = [
+    // Extract the best primary location name
+    function extractPrimary(data) {
+      const address = data.address || {};
+
+      // First: Check for specific POI/place name from the response
+      // Nominatim returns 'name' for specific places like gates, stores, landmarks
+      if (data.name && data.name !== address.city && data.name !== address.road) {
+        return data.name;
+      }
+
+      // Second: Check for specific place types in address
+      const poiTypes = ['aeroway', 'amenity', 'shop', 'tourism', 'building', 'leisure'];
+      for (const type of poiTypes) {
+        if (address[type]) return address[type];
+      }
+
+      // Third: Neighborhood-level
+      const neighborhoodTypes = [
         'neighbourhood',
         'suburb',
         'hamlet',
         'village',
         'town',
         'city_district',
-        'district',
-        'city',
-        'municipality'
+        'district'
       ];
-
-      for (const key of priorities) {
+      for (const key of neighborhoodTypes) {
         if (address[key]) return address[key];
       }
 
+      // Fourth: Road/intersection as fallback
+      if (address.road) {
+        return address.road;
+      }
+
+      // Last resort: city
       return address.city || address.county || 'Unknown area';
     }
 
-    // Extract secondary info (city/region if different from primary)
-    function extractSecondary(address, primary) {
+    // Extract secondary info (context for the primary)
+    function extractSecondary(data, primary) {
+      const address = data.address || {};
       const parts = [];
 
-      if (address.city && address.city !== primary) {
-        parts.push(address.city);
-      } else if (address.town && address.town !== primary) {
-        parts.push(address.town);
-      } else if (address.municipality && address.municipality !== primary) {
-        parts.push(address.municipality);
+      // If primary is a POI/place, show neighborhood or road
+      const isSpecificPlace = data.name === primary ||
+        ['aeroway', 'amenity', 'shop', 'tourism', 'building', 'leisure']
+          .some(t => address[t] === primary);
+
+      if (isSpecificPlace) {
+        // Show road or neighborhood for context
+        if (address.road && address.road !== primary) {
+          parts.push(address.road);
+        } else if (address.neighbourhood) {
+          parts.push(address.neighbourhood);
+        } else if (address.suburb) {
+          parts.push(address.suburb);
+        }
       }
 
+      // Add city if different from primary
+      const city = address.city || address.town || address.municipality;
+      if (city && city !== primary && !parts.includes(city)) {
+        parts.push(city);
+      }
+
+      // Add state abbreviation
       if (address.state) {
-        // Abbreviate common US states
         const stateAbbrev = {
           'California': 'CA', 'New York': 'NY', 'Texas': 'TX',
           'Florida': 'FL', 'Washington': 'WA', 'Oregon': 'OR',
-          'Nevada': 'NV', 'Arizona': 'AZ', 'Colorado': 'CO'
+          'Nevada': 'NV', 'Arizona': 'AZ', 'Colorado': 'CO',
+          'Massachusetts': 'MA', 'Illinois': 'IL', 'Pennsylvania': 'PA',
+          'Ohio': 'OH', 'Georgia': 'GA', 'Michigan': 'MI', 'New Jersey': 'NJ'
         };
         parts.push(stateAbbrev[address.state] || address.state);
       }
@@ -436,9 +470,8 @@
         const data = await reverseGeocode(lat, lon);
         locationData = { data, lat, lon, accuracy };
 
-        const address = data.address || {};
-        const primary = extractPrimary(address);
-        const secondary = extractSecondary(address, primary);
+        const primary = extractPrimary(data);
+        const secondary = extractSecondary(data, primary);
 
         $('container').classList.remove('loading');
         $('primary').textContent = primary;
