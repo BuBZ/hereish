@@ -261,10 +261,10 @@
     // Extract the best primary location name
     function extractPrimary(data) {
       const address = data.address || {};
+      const city = address.city || address.town || address.municipality;
 
       // First: Check for specific POI/place name from the response
-      // Nominatim returns 'name' for specific places like gates, stores, landmarks
-      if (data.name && data.name !== address.city && data.name !== address.road) {
+      if (data.name && data.name !== city && data.name !== address.road) {
         return data.name;
       }
 
@@ -274,7 +274,21 @@
         if (address[type]) return address[type];
       }
 
-      // Third: Neighborhood-level
+      // Third: Parse display_name for specific location
+      // Nominatim returns "D14, 780, Departures, San Francisco..."
+      // The first part is often the most specific identifier
+      if (data.display_name) {
+        const firstPart = data.display_name.split(',')[0].trim();
+        // Use it if it's short and not the city/road name
+        if (firstPart.length <= 30 &&
+            firstPart !== city &&
+            firstPart !== address.road &&
+            firstPart !== address.county) {
+          return firstPart;
+        }
+      }
+
+      // Fourth: Neighborhood-level
       const neighborhoodTypes = [
         'neighbourhood',
         'suburb',
@@ -288,22 +302,28 @@
         if (address[key]) return address[key];
       }
 
-      // Fourth: Road/intersection as fallback
+      // Fifth: Road as fallback
       if (address.road) {
         return address.road;
       }
 
       // Last resort: city
-      return address.city || address.county || 'Unknown area';
+      return city || address.county || 'Unknown area';
     }
 
     // Extract secondary info (context for the primary)
     function extractSecondary(data, primary) {
       const address = data.address || {};
       const parts = [];
+      const city = address.city || address.town || address.municipality;
 
-      // If primary is a POI/place, show neighborhood or road
-      const isSpecificPlace = data.name === primary ||
+      // Check if primary came from display_name parsing (specific place)
+      const isFromDisplayName = data.display_name &&
+        data.display_name.split(',')[0].trim() === primary;
+
+      // If primary is a specific place, show road/area for context
+      const isSpecificPlace = isFromDisplayName ||
+        data.name === primary ||
         ['aeroway', 'amenity', 'shop', 'tourism', 'building', 'leisure']
           .some(t => address[t] === primary);
 
@@ -319,7 +339,6 @@
       }
 
       // Add city if different from primary
-      const city = address.city || address.town || address.municipality;
       if (city && city !== primary && !parts.includes(city)) {
         parts.push(city);
       }
