@@ -54,6 +54,13 @@
       opacity: 0.4;
     }
 
+    .speed {
+      font-size: clamp(1.5rem, 8vw, 3rem);
+      font-weight: 600;
+      color: #4af;
+      margin-bottom: 16px;
+    }
+
     .actions {
       position: fixed;
       bottom: 0;
@@ -145,6 +152,17 @@
       font-size: 0.875rem;
     }
 
+    .attribution {
+      text-align: center;
+      padding: 16px 0 8px;
+      font-size: 0.75rem;
+      opacity: 0.4;
+    }
+
+    .attribution a {
+      color: inherit;
+    }
+
     .close-details {
       position: absolute;
       top: 8px;
@@ -217,6 +235,7 @@
   <div class="container" id="container">
     <div class="location-primary" id="primary">Finding you</div>
     <div class="location-secondary" id="secondary"></div>
+    <div class="speed" id="speed"></div>
     <div class="status" id="status">Requesting location...</div>
   </div>
 
@@ -239,6 +258,9 @@
   <script>
     const $ = id => document.getElementById(id);
     let locationData = null;
+    let watchId = null;
+    let lastGeocode = 0;
+    const GEOCODE_INTERVAL = 10000; // Only re-geocode every 10 seconds
 
     // Show toast message
     function toast(msg) {
@@ -446,12 +468,18 @@
         html: true
       });
 
-      return rows.map(r => `
+      const rowsHtml = rows.map(r => `
         <div class="detail-row">
           <span class="detail-label">${r.label}</span>
           <span class="detail-value${r.mono ? ' mono' : ''}">${r.html ? r.value : escapeHtml(r.value)}</span>
         </div>
       `).join('');
+
+      return rowsHtml + `
+        <div class="attribution">
+          Data © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors
+        </div>
+      `;
     }
 
     function escapeHtml(str) {
@@ -460,12 +488,85 @@
       return div.innerHTML;
     }
 
-    // Main location fetch
-    async function getLocation() {
+    // Format speed for display
+    function formatSpeed(metersPerSecond) {
+      if (metersPerSecond == null || metersPerSecond <= 0) return null;
+      const mph = metersPerSecond * 2.237;
+      return `${Math.round(mph)} mph`;
+    }
+
+    // Update speed display
+    function updateSpeed(speed) {
+      const formatted = formatSpeed(speed);
+      $('speed').textContent = formatted || '';
+    }
+
+    // Handle position update
+    async function handlePosition(pos) {
+      const { latitude: lat, longitude: lon, accuracy, speed } = pos.coords;
+
+      // Always update speed immediately
+      updateSpeed(speed);
+
+      // Check if we should re-geocode (throttle API calls)
+      const now = Date.now();
+      const shouldGeocode = !locationData || (now - lastGeocode > GEOCODE_INTERVAL);
+
+      if (shouldGeocode) {
+        lastGeocode = now;
+
+        try {
+          if (!locationData) {
+            $('status').textContent = 'Looking up address...';
+          }
+
+          const data = await reverseGeocode(lat, lon);
+          locationData = { data, lat, lon, accuracy };
+
+          const primary = extractPrimary(data);
+          const secondary = extractSecondary(data, primary);
+
+          $('container').classList.remove('loading');
+          $('primary').textContent = primary;
+          $('secondary').textContent = secondary;
+          $('status').textContent = accuracy ? `± ${Math.round(accuracy)}m` : '';
+          $('actions').style.display = 'flex';
+          $('detailsContent').innerHTML = buildDetails(data, lat, lon);
+        } catch (err) {
+          // Only show error if we have no data yet
+          if (!locationData) {
+            showError('Could not look up address');
+          }
+        }
+      } else {
+        // Just update accuracy
+        $('status').textContent = accuracy ? `± ${Math.round(accuracy)}m` : '';
+        // Update stored coords for sharing
+        if (locationData) {
+          locationData.lat = lat;
+          locationData.lon = lon;
+          locationData.accuracy = accuracy;
+        }
+      }
+    }
+
+    // Handle position error
+    function handlePositionError(err) {
+      const messages = {
+        1: 'Location access denied',
+        2: 'Location unavailable',
+        3: 'Location request timed out'
+      };
+      showError(messages[err.code] || 'Could not get location');
+    }
+
+    // Start watching location
+    function startWatching() {
       $('container').classList.remove('error');
       $('container').classList.add('loading');
       $('primary').textContent = 'Finding you';
       $('secondary').textContent = '';
+      $('speed').textContent = '';
       $('status').textContent = 'Requesting location...';
       $('actions').style.display = 'none';
 
@@ -474,34 +575,29 @@
         return;
       }
 
-      try {
-        const pos = await new Promise((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 60000
-          });
-        });
-
-        const { latitude: lat, longitude: lon, accuracy } = pos.coords;
-        $('status').textContent = 'Looking up address...';
-
-        const data = await reverseGeocode(lat, lon);
-        locationData = { data, lat, lon, accuracy };
-
-        const primary = extractPrimary(data);
-        const secondary = extractSecondary(data, primary);
-
-        $('container').classList.remove('loading');
-        $('primary').textContent = primary;
-        $('secondary').textContent = secondary;
-        $('status').textContent = accuracy ? `± ${Math.round(accuracy)}m` : '';
-        $('actions').style.display = 'flex';
-        $('detailsContent').innerHTML = buildDetails(data, lat, lon);
-
-      } catch (err) {
-        showError(err.message || 'Could not get location');
+      // Clear existing watch if any
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
       }
+
+      // Reset state for fresh geocode
+      locationData = null;
+      lastGeocode = 0;
+
+      watchId = navigator.geolocation.watchPosition(
+        handlePosition,
+        handlePositionError,
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 5000
+        }
+      );
+    }
+
+    // Legacy function name for refresh button
+    function getLocation() {
+      startWatching();
     }
 
     function showError(msg) {
@@ -509,6 +605,7 @@
       $('container').classList.add('error');
       $('primary').textContent = msg;
       $('secondary').textContent = '';
+      $('speed').textContent = '';
       $('status').textContent = 'Tap refresh to try again';
       $('actions').style.display = 'flex';
     }
@@ -569,7 +666,7 @@
     });
 
     // Start
-    getLocation();
+    startWatching();
   </script>
 </body>
 </html>
