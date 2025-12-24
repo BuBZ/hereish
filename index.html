@@ -229,12 +229,35 @@
       font-size: clamp(1.25rem, 6vw, 2rem);
       opacity: 0.8;
     }
+
+    /* Offline indicator */
+    .offline-badge {
+      display: inline-block;
+      background: #f90;
+      color: #000;
+      font-size: 0.625rem;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .coords-display {
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+      font-size: 0.875rem;
+      opacity: 0.5;
+      margin-top: 8px;
+    }
   </style>
 </head>
 <body>
   <div class="container" id="container">
+    <div class="offline-badge" id="offlineBadge" style="display: none;">Offline</div>
     <div class="location-primary" id="primary">Finding you</div>
     <div class="location-secondary" id="secondary"></div>
+    <div class="coords-display" id="coords"></div>
     <div class="speed" id="speed"></div>
     <div class="status" id="status">Requesting location...</div>
   </div>
@@ -260,7 +283,35 @@
     let locationData = null;
     let watchId = null;
     let lastGeocode = 0;
+    let isOffline = !navigator.onLine;
     const GEOCODE_INTERVAL = 10000; // Only re-geocode every 10 seconds
+    const CACHE_KEY = 'hereish_cached_location';
+
+    // Cache functions
+    function saveToCache(data, lat, lon) {
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          data, lat, lon,
+          timestamp: Date.now()
+        }));
+      } catch (e) {
+        // localStorage might be full or disabled
+      }
+    }
+
+    function loadFromCache() {
+      try {
+        const cached = localStorage.getItem(CACHE_KEY);
+        if (cached) return JSON.parse(cached);
+      } catch (e) {}
+      return null;
+    }
+
+    // Update offline UI
+    function updateOfflineState(offline) {
+      isOffline = offline;
+      $('offlineBadge').style.display = offline ? 'inline-block' : 'none';
+    }
 
     // Show toast message
     function toast(msg) {
@@ -523,30 +574,67 @@
           const data = await reverseGeocode(lat, lon);
           locationData = { data, lat, lon, accuracy };
 
+          // Cache successful geocode
+          saveToCache(data, lat, lon);
+          updateOfflineState(false);
+
           const primary = extractPrimary(data);
           const secondary = extractSecondary(data, primary);
 
           $('container').classList.remove('loading');
           $('primary').textContent = primary;
           $('secondary').textContent = secondary;
+          $('coords').textContent = '';
           $('status').textContent = accuracy ? `± ${Math.round(accuracy)}m` : '';
           $('actions').style.display = 'flex';
           $('detailsContent').innerHTML = buildDetails(data, lat, lon);
         } catch (err) {
-          // Only show error if we have no data yet
-          if (!locationData) {
-            showError('Could not look up address', 'Check your internet connection');
-          }
+          // Geocoding failed - try to use cache
+          handleOfflineMode(lat, lon, accuracy);
         }
       } else {
-        // Just update accuracy
+        // Just update accuracy and coords if offline
         $('status').textContent = accuracy ? `± ${Math.round(accuracy)}m` : '';
+        if (isOffline) {
+          $('coords').textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        }
         // Update stored coords for sharing
         if (locationData) {
           locationData.lat = lat;
           locationData.lon = lon;
           locationData.accuracy = accuracy;
         }
+      }
+    }
+
+    // Handle offline mode - show cached location + live coords
+    function handleOfflineMode(lat, lon, accuracy) {
+      updateOfflineState(true);
+      $('container').classList.remove('loading');
+
+      const cached = loadFromCache();
+
+      if (cached) {
+        // Show cached location name with live coords
+        const primary = extractPrimary(cached.data);
+        const secondary = extractSecondary(cached.data, primary);
+
+        locationData = { data: cached.data, lat, lon, accuracy };
+
+        $('primary').textContent = primary;
+        $('secondary').textContent = secondary;
+        $('coords').textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        $('status').textContent = accuracy ? `± ${Math.round(accuracy)}m` : '';
+        $('actions').style.display = 'flex';
+        $('detailsContent').innerHTML = buildDetails(cached.data, lat, lon);
+      } else {
+        // No cache - show coords only
+        $('primary').textContent = formatCoords(lat, lon);
+        $('secondary').textContent = 'No cached location';
+        $('coords').textContent = '';
+        $('status').textContent = accuracy ? `± ${Math.round(accuracy)}m` : '';
+        $('actions').style.display = 'flex';
+        locationData = { data: null, lat, lon, accuracy };
       }
     }
 
@@ -576,9 +664,11 @@
       $('container').classList.add('loading');
       $('primary').textContent = 'Finding you';
       $('secondary').textContent = '';
+      $('coords').textContent = '';
       $('speed').textContent = '';
       $('status').textContent = 'Requesting location...';
       $('actions').style.display = 'none';
+      $('offlineBadge').style.display = 'none';
 
       if (!navigator.geolocation) {
         showError('Geolocation not supported', 'Try a different browser');
@@ -615,6 +705,7 @@
       $('container').classList.add('error');
       $('primary').textContent = msg;
       $('secondary').textContent = hint || '';
+      $('coords').textContent = '';
       $('speed').textContent = '';
       $('status').textContent = 'Tap refresh to try again';
       $('actions').style.display = 'flex';
@@ -673,6 +764,18 @@
     $('detailsPanel').addEventListener('touchmove', e => {
       const diff = e.touches[0].clientY - touchStart;
       if (diff > 50) closeDetails();
+    });
+
+    // Listen for online/offline events
+    window.addEventListener('online', () => {
+      updateOfflineState(false);
+      // Trigger a fresh geocode
+      lastGeocode = 0;
+      toast('Back online');
+    });
+
+    window.addEventListener('offline', () => {
+      updateOfflineState(true);
     });
 
     // Start
